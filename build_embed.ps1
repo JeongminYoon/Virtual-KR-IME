@@ -1,10 +1,13 @@
-# Virtual KR IME - Windows Embeddable Python 배포 패키지 빌드 스크립트
+﻿# Virtual KR IME - Windows Embeddable Python 배포 패키지 빌드 스크립트
 # 사용법: .\build_embed.ps1 [-Version "3.12.3"]
 # 결과: build\Virtual_KR_IME\ 에 실행 가능한 폴더가 생성됨. 압축해서 배포하면 됨.
 
 param(
     [string]$Version = "3.12.3"
 )
+# 터미널 한글 출력: 출력 인코딩 UTF-8 + 콘솔 코드페이지 65001
+$null = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try { chcp 65001 | Out-Null } catch { }
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
@@ -112,7 +115,8 @@ $ReadmeDist = @"
   - 일부 게임/안티치트는 입력 도구 사용을 제한할 수 있습니다.
 "@
 $ReadmePath = Join-Path $DistDir "README.txt"
-[System.IO.File]::WriteAllText($ReadmePath, $ReadmeDist, [System.Text.UTF8Encoding]::new($false))
+# BOM 있음($true): Windows 메모장 등에서 UTF-8로 인식해 한글이 깨지지 않음
+[System.IO.File]::WriteAllText($ReadmePath, $ReadmeDist, [System.Text.UTF8Encoding]::new($true))
 Write-Host "README.txt 생성 완료"
 
 Write-Host ""
