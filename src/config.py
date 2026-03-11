@@ -29,9 +29,9 @@ class Settings:
     debug: bool = True
 
     # 게임 채팅창 호환: 글자와 글자 사이 지연(초). 0이면 지연 없음. 게임에서 한 글자만 남으면 0.05~0.08 로 올려보기.
-    inject_delay_sec: float = 0.01
+    inject_delay_sec: float = 0.025
     # 백스페이스 보낸 뒤, 새 글자 보내기 전 대기(초). 게임이 백스페이스 처리할 시간을 줌.
-    inject_delay_after_backspaces_sec: float = 0.01
+    inject_delay_after_backspaces_sec: float = 0.025
 
     # IME가 동작할 대상 윈도우 제목 키워드(쉼표 구분). 비워두면 전체에서 동작.
     # 예: "lost ark,lostark,gameclient"

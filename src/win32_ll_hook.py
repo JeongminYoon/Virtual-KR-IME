@@ -171,7 +171,8 @@ def start_ll_hook(
 
     hook_handle: HHOOK | None = None
     thread_id: list[int] = []
-    last_blocked_vk: list[int | None] = [None]
+    blocked_keyups: set[int] = set()
+    pending_activation: list[bool] = [False]
 
     def hook_proc(nCode: int, wParam: int, lParam: int) -> int:
         nonlocal hook_handle
@@ -187,8 +188,8 @@ def start_ll_hook(
         vk = struct_ptr.contents.vkCode
         is_keydown = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
         if not is_keydown:
-            if last_blocked_vk[0] == vk:
-                last_blocked_vk[0] = None
+            if vk in blocked_keyups:
+                blocked_keyups.discard(vk)
                 return 1  # block key up
             return next_()
 
@@ -199,23 +200,30 @@ def start_ll_hook(
             return next_()
 
         is_target, ime_on = decision_callback()
+        if ime_on and pending_activation[0]:
+            pending_activation[0] = False
+        effective_ime_on = ime_on or pending_activation[0]
 
         # IME 제어 키: keyboard 라이브러리는 동시입력 시 이벤트를 놓칠 수 있으므로 LL에서 처리
-        if key_name in deactivate_key_names and is_target and ime_on:
-            last_blocked_vk[0] = vk
+        if key_name in deactivate_key_names and is_target and effective_ime_on:
+            pending_activation[0] = False
+            blocked_keyups.add(vk)
             try:
                 key_queue.put_nowait((f"__deactivate__:{key_name}", False))
             except queue.Full:
                 pass
             return 1
-        if key_name == toggle_key and is_target and ime_on:
-            last_blocked_vk[0] = vk
+        if key_name == toggle_key and is_target and effective_ime_on:
+            blocked_keyups.add(vk)
             try:
                 key_queue.put_nowait(("__toggle__", False))
             except queue.Full:
                 pass
             return 1
-        if key_name == activate_key and is_target and not ime_on:
+        if key_name == activate_key and is_target and not effective_ime_on:
+            # Enter로 채팅을 열자마자 바로 타이핑해도 다음 키들이
+            # 활성화 이벤트 처리 전 유실되지 않도록 훅 단계에서 즉시 반영한다.
+            pending_activation[0] = True
             try:
                 key_queue.put_nowait(("__activate__", False))
             except queue.Full:
@@ -232,10 +240,10 @@ def start_ll_hook(
         else:
             return next_()
 
-        if not (is_target and ime_on):
+        if not (is_target and effective_ime_on):
             return next_()
 
-        last_blocked_vk[0] = vk
+        blocked_keyups.add(vk)
         try:
             key_queue.put_nowait((key_name, shifted))
         except queue.Full:
