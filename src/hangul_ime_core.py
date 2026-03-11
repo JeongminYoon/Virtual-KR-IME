@@ -202,6 +202,18 @@ class HangulState:
         return not (self.chosung or self.jungsung or self.jongsung)
 
 
+@dataclass(frozen=True)
+class HangulRenderState:
+    """화면 반영용 스냅샷. 확정 글자와 조합 중 글자를 분리해 보관한다."""
+
+    committed_text: str = ""
+    current_text: str = ""
+
+    @property
+    def text(self) -> str:
+        return self.committed_text + self.current_text
+
+
 @dataclass
 class HangulIMECore:
     """간단한 두벌식 한글 IME 핵심 로직.
@@ -220,7 +232,14 @@ class HangulIMECore:
 
     @property
     def text(self) -> str:
-        return "".join(self.committed) + self.current.to_char()
+        return self.render_state.text
+
+    @property
+    def render_state(self) -> HangulRenderState:
+        return HangulRenderState(
+            committed_text="".join(self.committed),
+            current_text=self.current.to_char(),
+        )
 
     def feed_text(self, text: str, as_english: bool = False) -> str:
         """여러 글자를 연속으로 입력했을 때의 결과 문자열을 반환."""

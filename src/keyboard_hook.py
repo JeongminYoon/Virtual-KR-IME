@@ -8,6 +8,7 @@ Windows Low-Level 훅(WH_KEYBOARD_LL)으로 대상 창 포커스 시에만:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import queue
 import threading
 import time
@@ -19,10 +20,17 @@ from pynput import mouse
 from pynput.mouse import Button
 
 from .config import settings
-from .hangul_ime_core import HangulIMECore
+from .hangul_ime_core import HangulIMECore, HangulRenderState
 from .injector_windows import send_backspaces as _lowlevel_send_backspaces, send_text
 from .logger import log
 from . import win32_ll_hook
+
+
+@dataclass(frozen=True)
+class RenderRequest:
+    epoch: int
+    state: HangulRenderState
+    force_current: bool = False
 
 
 class KeyboardManager:
@@ -31,9 +39,11 @@ class KeyboardManager:
         self.korean_mode: bool = False  # IME 내 한/영 서브모드. IME 끄기 후에도 유지
         self.core = HangulIMECore()
         self.last_text: str = ""
+        self.last_render_state = HangulRenderState()
+        self._render_epoch: int = 0
         self._mouse_listener = None  # IME 끄기용 마우스 클릭 (mouse left/right)
         self._last_deactivate_by_activate_key: float = 0.0  # 같은 키로 끄기 직후 켜기 무시용
-        self._update_queue: queue.Queue[str] = queue.Queue()
+        self._update_queue: queue.Queue[RenderRequest] = queue.Queue()
         self._update_worker = threading.Thread(target=self._run_update_worker, daemon=True)
         self._update_worker.start()
         self._ll_key_queue: queue.Queue[tuple[str | None, bool]] = queue.Queue()
@@ -41,21 +51,64 @@ class KeyboardManager:
         self._ll_consumer_thread: threading.Thread | None = None
         self._update_screen_lock = threading.Lock()
 
+    def _clear_update_queue(self) -> None:
+        try:
+            while True:
+                self._update_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _queue_render_update(self, *, force_current: bool = False) -> None:
+        self._update_queue.put(
+            RenderRequest(self._render_epoch, self.core.render_state, force_current=force_current)
+        )
+
+    def _render_state(self, state: HangulRenderState, *, include_current: bool) -> None:
+        target_state = state if include_current else HangulRenderState(state.committed_text, "")
+        self._update_screen(target_state.text)
+        self.last_render_state = target_state
+
     def _run_update_worker(self) -> None:
+        pending: RenderRequest | None = None
+        pending_since = 0.0
+
         while True:
+            timeout = 0.25
+            if pending is not None and self.ime_enabled:
+                elapsed = time.monotonic() - pending_since
+                timeout = max(0.0, settings.composition_update_delay_sec - elapsed)
+
             try:
-                new_text = self._update_queue.get(timeout=0.25)
+                request = self._update_queue.get(timeout=timeout)
             except queue.Empty:
+                if pending is None or not self.ime_enabled:
+                    if not self.ime_enabled:
+                        pending = None
+                    continue
+                if pending.epoch != self._render_epoch:
+                    pending = None
+                    continue
+                self._render_state(pending.state, include_current=True)
+                pending = None
                 continue
-            if not self.ime_enabled:
+
+            if not self.ime_enabled or request.epoch != self._render_epoch:
+                pending = None
                 continue
-            time.sleep(0.05)
-            try:
-                while True:
-                    new_text = self._update_queue.get_nowait()
-            except queue.Empty:
-                pass
-            self._update_screen(new_text)
+
+            pending = request
+            pending_since = time.monotonic()
+
+            if request.force_current:
+                self._render_state(request.state, include_current=True)
+                pending = None
+                continue
+
+            if request.state.committed_text != self.last_render_state.committed_text:
+                # 확정 글자는 가능한 빨리 반영하고, 조합 중 글자는 잠시 모아 뭉쳐서 보낸다.
+                self._render_state(request.state, include_current=False)
+                if not request.state.current_text:
+                    pending = None
 
     # ---------- 활성 윈도우 필터링 ----------
     def _is_target_window(self) -> bool:
@@ -123,8 +176,11 @@ class KeyboardManager:
             )
         self.ime_enabled = True
         log("Virtual Hangul IME ON (" + ("Korean" if self.korean_mode else "English") + " mode)")
+        self._render_epoch += 1
+        self._clear_update_queue()
         self.core.reset()
         self.last_text = ""
+        self.last_render_state = HangulRenderState()
         self._install_letter_hooks()
 
     def toggle_language_mode(self) -> None:
@@ -189,23 +245,23 @@ class KeyboardManager:
             if not self.core.text:
                 keyboard.send("backspace")
                 return
-            new_text = self.core.handle_backspace()
-            self._update_queue.put(new_text)
+            self.core.handle_backspace()
+            self._queue_render_update(force_current=True)
             return
         if key_name == " ":
-            new_text = self.core.handle_space()
-            self._update_queue.put(new_text)
+            self.core.handle_space()
+            self._queue_render_update(force_current=True)
             return
         if len(key_name) != 1:
             return
         if key_name in settings.intercept_punctuations:
-            new_text = self.core.feed_key(key_name, shifted=False)
+            self.core.feed_key(key_name, shifted=False)
         else:
             if self.korean_mode:
-                new_text = self.core.feed_key(key_name, shifted=shifted, as_english=False)
+                self.core.feed_key(key_name, shifted=shifted, as_english=False)
             else:
-                new_text = self.core.feed_key(key_name, shifted=shifted, as_english=True)
-        self._update_queue.put(new_text)
+                self.core.feed_key(key_name, shifted=shifted, as_english=True)
+        self._queue_render_update(force_current=False)
 
     def _remove_letter_hooks(self) -> None:
         # LL 훅·컨슈머는 유지 (IME OFF여도 다음 활성/토글 키 수신). 마우스 리스너만 해제.
@@ -261,8 +317,13 @@ class KeyboardManager:
         activate_key = (settings.ime_activate_key or "").strip().lower()
         if reason == activate_key:
             self._last_deactivate_by_activate_key = time.time()
+        # 조합 중 글자가 아직 지연 반영 대기 중일 수 있으므로, IME 종료 전 최종 상태를 먼저 밀어넣는다.
+        self._render_state(self.core.render_state, include_current=True)
+        self._render_epoch += 1
+        self._clear_update_queue()
         self.core.reset()
         self.last_text = ""
+        self.last_render_state = HangulRenderState()
         self._remove_letter_hooks()
         self.ime_enabled = False
 
