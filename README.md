@@ -37,7 +37,8 @@ main.py
        ├─ win32_ll_hook.start_ll_hook()
        │     • WH_KEYBOARD_LL 전역 훅 스레드
        │     • 키 다운 시: 활성/끄기/토글/글자/백스페이스/스페이스 판별
-       │     • 대상 창 + IME ON일 때만 글자류 가로채기 → key_queue에 (key_name, shifted) 넣음
+       │     • 활성 키(예: Enter) 직후에도 빠른 타이핑이 누락되지 않도록, 훅 단계에서 "IME ON 예정"을 즉시 반영
+       │     • 대상 창 + (IME ON 또는 ON 예정)일 때만 글자류 가로채기 → key_queue에 (key_name, shifted) 넣음
        │     • 우리가 보낸 키(SendInput)는 LLKHF_INJECTED로 통과
        │
        ├─ _run_ll_consumer() 스레드
@@ -45,12 +46,12 @@ main.py
        │     • __activate__ → activate_ime()
        │     • __deactivate__:... → _deactivate_ime(), keyboard.send(reason)
        │     • __toggle__ → toggle_language_mode()
-       │     • backspace / space / 한 글자 → HangulIMECore 처리 후 _update_queue.put(전체문자열)
+       │     • backspace / space / 한 글자 → HangulIMECore 처리 후 _update_queue.put(RenderRequest)
        │
        ├─ _run_update_worker() 스레드
-       │     • _update_queue에서 새 전체 문자열 수신
-       │     • _update_screen(new_text): last_text와 diff 계산
-       │     • 공통 접두사 이후만 백스페이스 N회 + send_text(꼬리) → injector_windows
+       │     • _update_queue에서 RenderRequest 수신 (HangulRenderState: committed/current 분리)
+       │     • 확정(committed) 글자는 즉시 반영, 조합 중(current) 글자는 composition_update_delay_sec 동안 배치 후 반영
+       │     • _update_screen(text): last_text와 diff 계산 → 공통 접두사 이후만 백스페이스 N회 + send_text(꼬리)
        │
        ├─ HangulIMECore (hangul_ime_core.py)
        │     • 두벌식 자모 테이블(KEY_TO_JAMO, 쌍자음/복모음/겹받침)
@@ -104,6 +105,7 @@ GitHub **Releases**에 올려 둔 ZIP 파일을 사용하는 방법입니다.
   - **IME 끄기 키**: `ime_deactivate_keys` (예: `enter, esc, mouse left, mouse right`)
   - **한/영 전환 키**: `language_toggle_key` (기본 `right alt`)
   - 게임에 따라 **`inject_delay_sec`**, **`inject_delay_after_backspaces_sec`** 를 조금 올리면 입력이 더 안정될 수 있습니다.
+  - 저FPS/채팅 처리 지연이 큰 게임이라면 **`composition_update_delay_sec`** 를 올려 "조합 중 글자 갱신" 빈도를 줄이면 누락이 줄어들 수 있습니다.
 
 ### 5. 주의사항
 
