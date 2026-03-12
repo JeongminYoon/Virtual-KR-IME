@@ -6,7 +6,7 @@
 
 ## 프로젝트 소개 및 작동 원리
 
-많은 게임은 채팅창에서 Windows IME(한글 입력기)를 지원하지 않아, 영문만 입력되거나 한글 조합이 깨집니다. 이 프로그램은 **전역 Low-Level 키보드 훅**으로 입력을 가로채고, **두벌식 규칙**으로 한글을 조합한 뒤 **유니코드 입력 주입**으로 채팅창에 직접 넣어 줍니다.
+많은 게임은 채팅창에서 Windows IME(한글 입력기)를 지원하지 않아, 영문만 입력되거나 한글 조합이 깨집니다. 이 프로그램은 **전역 Low-Level 키보드/마우스 훅**으로 입력을 감시하고, **두벌식 규칙**으로 한글을 조합한 뒤 **유니코드 입력 주입**으로 채팅창에 직접 넣어 줍니다.
 
 ### 작동 방식 요약
 
@@ -35,16 +35,17 @@ main.py
   └─ KeyboardManager().run()
        │
        ├─ win32_ll_hook.start_ll_hook()
-       │     • WH_KEYBOARD_LL 전역 훅 스레드
+       │     • WH_KEYBOARD_LL + WH_MOUSE_LL 전역 훅 스레드
        │     • 키 다운 시: 활성/끄기/토글/글자/백스페이스/스페이스 판별
+       │     • 마우스 다운 시: 설정된 mouse left/right면 __deactivate__ 이벤트만 큐에 넣고 클릭은 그대로 통과
        │     • 활성 키(예: Enter) 직후에도 빠른 타이핑이 누락되지 않도록, 훅 단계에서 "IME ON 예정"을 즉시 반영
        │     • 대상 창 + (IME ON 또는 ON 예정)일 때만 글자류 가로채기 → key_queue에 (key_name, shifted) 넣음
-       │     • 우리가 보낸 키(SendInput)는 LLKHF_INJECTED로 통과
+       │     • 우리가 보낸 키(SendInput)는 LLKHF_INJECTED/LLMHF_INJECTED로 통과
        │
        ├─ _run_ll_consumer() 스레드
        │     • key_queue에서 꺼내서 _process_ll_key() 호출
        │     • __activate__ → activate_ime()
-       │     • __deactivate__:... → _deactivate_ime(), keyboard.send(reason)
+       │     • __deactivate__:... → _deactivate_ime(); 키보드 종료 키만 keyboard.send(reason)로 재전송
        │     • __toggle__ → toggle_language_mode()
        │     • backspace / space / 한 글자 → HangulIMECore 처리 후 _update_queue.put(RenderRequest)
        │
@@ -69,7 +70,7 @@ main.py
 |------|------|
 | `src/main.py` | 진입점, `KeyboardManager` 생성 및 `run()` |
 | `src/keyboard_hook.py` | 훅 이벤트 수신·분기, IME 켜기/끄기/토글, `HangulIMECore` 호출, 화면 갱신 큐 처리 |
-| `src/win32_ll_hook.py` | Windows `WH_KEYBOARD_LL` 훅, VK→키이름 변환, 대상 창·IME 상태에 따른 가로채기/통과 |
+| `src/win32_ll_hook.py` | Windows `WH_KEYBOARD_LL` / `WH_MOUSE_LL` 훅, 키·마우스 이벤트를 제어 이벤트/문자 이벤트로 정규화 |
 | `src/hangul_ime_core.py` | 두벌식 자모 매핑 및 초/중/종성 조합, 백스페이스·스페이스 처리 |
 | `src/injector_windows.py` | `SendInput`으로 유니코드 문자 입력 및 백스페이스 주입 |
 | `src/config.py` | 활성/끄기/토글 키, 대상 창 키워드, 주입 지연 등 설정 |
@@ -103,6 +104,7 @@ GitHub **Releases**에 올려 둔 ZIP 파일을 사용하는 방법입니다.
   - **대상 게임 창 제목 키워드**: `target_window_keywords` (쉼표 구분). 비우면 모든 창에서 동작.
   - **IME 켜기 키**: `ime_activate_key` (기본 `enter`)
   - **IME 끄기 키**: `ime_deactivate_keys` (예: `enter, esc, mouse left, mouse right`)
+    - `mouse left`, `mouse right`는 마우스 LL 훅으로 감지하며, 클릭 자체는 막지 않고 IME 종료 이벤트만 처리합니다.
   - **한/영 전환 키**: `language_toggle_key` (기본 `right alt`)
   - 게임에 따라 **`inject_delay_sec`**, **`inject_delay_after_backspaces_sec`** 를 조금 올리면 입력이 더 안정될 수 있습니다.
   - 저FPS/채팅 처리 지연이 큰 게임이라면 **`composition_update_delay_sec`** 를 올려 "조합 중 글자 갱신" 빈도를 줄이면 누락이 줄어들 수 있습니다.

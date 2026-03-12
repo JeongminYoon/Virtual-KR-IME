@@ -8,7 +8,8 @@ class Settings:
     # 채팅창 열었을 때 IME 켜기 전용 키 (예: enter)
     ime_activate_key: str = "enter"
 
-    # IME 끄기 전용 키. 쉼표로 여러 개 지정 가능. 눌리면 조합 확정/취소 후 IME OFF, 키는 게임으로 전달 (예: enter, esc, mouse left)
+    # IME 끄기 전용 키. 쉼표로 여러 개 지정 가능. 눌리면 조합 확정/취소 후 IME OFF.
+    # 키보드는 우리가 다시 게임으로 보내고, mouse left/right는 클릭을 막지 않고 그대로 통과시킨다.
     ime_deactivate_keys: str = "enter, esc, mouse left, mouse right"
 
     # IME 켜진 상태에서 한글↔영어 서브모드 전환 키 (예: 한/영 키 → right alt)
@@ -22,8 +23,8 @@ class Settings:
     # 한글 입력 시 가로챌 키 범위 (영문자/숫자 등)
     intercept_letters: str = "abcdefghijklmnopqrstuvwxyz0123456789"
 
-    # 한글 모드에서 함께 관리할 특수문자 (예: ! ? . , 등)
-    intercept_punctuations: str = "!?.,:;'-\""
+    # 한글 모드에서 함께 관리할 특수문자
+    intercept_punctuations: str = "!@#$%^&*()_+-=[]{}\\|;:'\",.<>/?`~"
 
     # 디버그 모드: 콘솔에 내부 상태를 출력할지 여부
     debug: bool = True
@@ -33,13 +34,13 @@ class Settings:
     #   inject_delay_after_backspaces_sec ≈ 2.5×frame_time (백스페이스 처리 여유)
     #   composition_update_delay_sec ≈ 1.5×frame_time (조합 갱신 배치 간격)
     # 추천값: 30 FPS → 0.05, 0.05, 0.05 | 60 FPS → 0.025, 0.04, 0.025 | 100 FPS → 0.015, 0.025, 0.015
-    inject_delay_sec: float = 0.05
-    inject_delay_after_backspaces_sec: float = 0.05
-    composition_update_delay_sec: float = 0.05
+    inject_delay_sec: float = 0.025
+    inject_delay_after_backspaces_sec: float = 0.025
+    composition_update_delay_sec: float = 0.025
 
     # IME가 동작할 대상 윈도우 제목 키워드(쉼표 구분). 비워두면 전체에서 동작.
     # 예: "lost ark,lostark,gameclient"
-    target_window_keywords: str = "HELLDIVERS™ 2"
+    target_window_keywords: str = ""
 
 
 settings = Settings()

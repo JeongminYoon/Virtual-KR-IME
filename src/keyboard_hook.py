@@ -16,8 +16,6 @@ import ctypes
 from typing import Callable
 
 import keyboard
-from pynput import mouse
-from pynput.mouse import Button
 
 from .config import settings
 from .hangul_ime_core import HangulIMECore, HangulRenderState
@@ -41,7 +39,6 @@ class KeyboardManager:
         self.last_text: str = ""
         self.last_render_state = HangulRenderState()
         self._render_epoch: int = 0
-        self._mouse_listener = None  # IME 끄기용 마우스 클릭 (mouse left/right)
         self._last_deactivate_by_activate_key: float = 0.0  # 같은 키로 끄기 직후 켜기 무시용
         self._update_queue: queue.Queue[RenderRequest] = queue.Queue()
         self._update_worker = threading.Thread(target=self._run_update_worker, daemon=True)
@@ -134,15 +131,16 @@ class KeyboardManager:
         title = buf.value.lower()
         return any(kw in title for kw in keywords)
 
-    def _parse_deactivate_config(self) -> tuple[list[str], set[str], str, str]:
-        """ime_deactivate_keys, (키 이름 집합, 마우스 제외), activate_key, toggle_key 반환."""
+    def _parse_deactivate_config(self) -> tuple[list[str], set[str], set[str], str, str]:
+        """ime_deactivate_keys와 키보드/마우스 종료 집합, activate_key, toggle_key 반환."""
         raw = (settings.ime_deactivate_keys or "").strip()
         deactivate_keys = [k.strip().lower() for k in raw.split(",") if k.strip()]
         mouse_keys = ("mouse left", "mouse right")
         key_names = {"esc" if k == "escape" else k for k in deactivate_keys if k not in mouse_keys}
+        mouse_names = {k for k in deactivate_keys if k in mouse_keys}
         activate = (settings.ime_activate_key or "").strip().lower()
         toggle = (settings.language_toggle_key or "").strip().lower()
-        return deactivate_keys, key_names, activate, toggle
+        return deactivate_keys, key_names, mouse_names, activate, toggle
 
     # ---------- IME 켜기/끄기 ----------
     def activate_ime(self) -> None:
@@ -154,7 +152,7 @@ class KeyboardManager:
         if not self._is_target_window():
             return
 
-        deactivate_keys, _, activate_key, _ = self._parse_deactivate_config()
+        deactivate_keys, _, _, activate_key, _ = self._parse_deactivate_config()
 
         if self.ime_enabled:
             # 이미 켜져 있을 때 ime_activate_key가 deactivate 목록에도 있으면 "끄기" 동작으로 처리
@@ -181,7 +179,6 @@ class KeyboardManager:
         self.core.reset()
         self.last_text = ""
         self.last_render_state = HangulRenderState()
-        self._install_letter_hooks()
 
     def toggle_language_mode(self) -> None:
         """IME 켜진 상태에서만 한글↔영어 서브 모드 전환."""
@@ -191,29 +188,6 @@ class KeyboardManager:
             return
         self.korean_mode = not self.korean_mode
         log("Language mode:", "Korean" if self.korean_mode else "English")
-
-    # ---------- 훅 설치/해제 ----------
-    def _install_letter_hooks(self) -> None:
-        """LL 훅·컨슈머는 run()에서 기동됨. IME 켜질 때 마우스 끄기 리스너만 등록."""
-        deactivate_keys, _, _, _ = self._parse_deactivate_config()
-        mouse_keys = ("mouse left", "mouse right")
-        if any(mk in deactivate_keys for mk in mouse_keys) and self._mouse_listener is None:
-            def _on_click(x: int, y: int, button: Button, pressed: bool) -> None:
-                if not (pressed and self.ime_enabled):
-                    return
-                reason = None
-                if button == Button.left and "mouse left" in deactivate_keys:
-                    reason = "mouse left"
-                elif button == Button.right and "mouse right" in deactivate_keys:
-                    reason = "mouse right"
-                if reason is None:
-                    return
-                if not self._is_target_window():
-                    return
-                log("Mouse click -> IME OFF:", reason)
-                self._deactivate_ime(reason=reason)
-            self._mouse_listener = mouse.Listener(on_click=_on_click)
-            self._mouse_listener.start()
 
     def _run_ll_consumer(self) -> None:
         while True:
@@ -231,7 +205,8 @@ class KeyboardManager:
             reason = key_name.split(":", 1)[1]
             log("LL deactivate key:", reason)
             self._deactivate_ime(reason=reason)
-            keyboard.send(reason)
+            if not reason.startswith("mouse "):
+                keyboard.send(reason)
             return
         if key_name == "__activate__":
             log("LL activate key")
@@ -262,15 +237,6 @@ class KeyboardManager:
             else:
                 self.core.feed_key(key_name, shifted=shifted, as_english=True)
         self._queue_render_update(force_current=False)
-
-    def _remove_letter_hooks(self) -> None:
-        # LL 훅·컨슈머는 유지 (IME OFF여도 다음 활성/토글 키 수신). 마우스 리스너만 해제.
-        if self._mouse_listener is not None:
-            try:
-                self._mouse_listener.stop()
-            except Exception:
-                pass
-            self._mouse_listener = None
 
     # ---------- 이벤트 핸들러 ----------
     def _send_backspaces_safely(self, n: int) -> None:
@@ -324,12 +290,11 @@ class KeyboardManager:
         self.core.reset()
         self.last_text = ""
         self.last_render_state = HangulRenderState()
-        self._remove_letter_hooks()
         self.ime_enabled = False
 
     # ---------- 실행 ----------
     def run(self) -> None:
-        _, deactivate_key_names, activate_key, toggle_key = self._parse_deactivate_config()
+        _, deactivate_key_names, deactivate_mouse_names, activate_key, toggle_key = self._parse_deactivate_config()
 
         def decision_callback() -> tuple[bool, bool]:
             return (self._is_target_window(), self.ime_enabled)
@@ -340,6 +305,7 @@ class KeyboardManager:
             decision_callback,
             self._ll_key_queue,
             deactivate_key_names,
+            deactivate_mouse_names,
             activate_key,
             toggle_key,
         )

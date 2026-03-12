@@ -1,8 +1,9 @@
 """
-Windows Low-Level Keyboard Hook (WH_KEYBOARD_LL).
+Windows Low-Level Hooks (WH_KEYBOARD_LL / WH_MOUSE_LL).
 
-모든 키 입력을 한 곳에서 받아, 대상 창·IME 상태에 따라 활성/끄기/토글/글자만 처리.
-다른 창에서는 키를 통과시켜 입력이 정상 동작하도록 함.
+모든 키보드/마우스 입력을 한 곳에서 받아, 대상 창·IME 상태에 따라
+활성/끄기/토글/글자만 처리한다. 마우스 클릭은 절대 막지 않고,
+설정된 버튼일 때만 IME 종료 이벤트를 큐에 올린다.
 """
 
 from __future__ import annotations
@@ -13,19 +14,25 @@ import queue
 import threading
 from typing import Callable
 
+from .logger import log
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
 HC_ACTION = 0
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
+WM_LBUTTONDOWN = 0x0201
+WM_RBUTTONDOWN = 0x0204
 WM_QUIT = 0x0012
 VK_SHIFT = 0x10
 VK_BACK = 0x08
 LLKHF_INJECTED = 0x10  # 우리가 SendInput 등으로 보낸 키는 통과
+LLMHF_INJECTED = 0x01  # 우리가 보낸 마우스 입력은 통과
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 VK_LMENU = 0xA4
@@ -47,6 +54,16 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
         ("vkCode", ctypes.wintypes.DWORD),
         ("scanCode", ctypes.wintypes.DWORD),
+        ("flags", ctypes.wintypes.DWORD),
+        ("time", ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", ctypes.wintypes.POINT),
+        ("mouseData", ctypes.wintypes.DWORD),
         ("flags", ctypes.wintypes.DWORD),
         ("time", ctypes.wintypes.DWORD),
         ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
@@ -164,20 +181,21 @@ def start_ll_hook(
     decision_callback: Callable[[], tuple[bool, bool]],  # (is_target_window, ime_enabled)
     key_queue: queue.Queue[tuple[str, bool]],
     deactivate_key_names: set[str],
+    deactivate_mouse_names: set[str],
     activate_key: str,
     toggle_key: str,
 ) -> tuple[Callable[[], None], threading.Thread]:
     """Low-level 훅 스레드 시작. 반환: (stop_fn, thread). key_queue에는 (key_name, shifted) 또는 제어용 (__deactivate__:key 등)이 들어감."""
 
-    hook_handle: HHOOK | None = None
+    keyboard_hook_handle: list[HHOOK | None] = [None]
+    mouse_hook_handle: list[HHOOK | None] = [None]
     thread_id: list[int] = []
     blocked_keyups: set[int] = set()
     pending_activation: list[bool] = [False]
 
-    def hook_proc(nCode: int, wParam: int, lParam: int) -> int:
-        nonlocal hook_handle
+    def keyboard_hook_proc(nCode: int, wParam: int, lParam: int) -> int:
         def next_() -> int:
-            return int(user32.CallNextHookEx(hook_handle, nCode, wParam, lParam))
+            return int(user32.CallNextHookEx(keyboard_hook_handle[0], nCode, wParam, lParam))
 
         if nCode != HC_ACTION:
             return next_()
@@ -250,23 +268,66 @@ def start_ll_hook(
             pass
         return 1  # block key (반드시 Python int로 반환해야 훅이 정상 동작)
 
+    def mouse_hook_proc(nCode: int, wParam: int, lParam: int) -> int:
+        def next_() -> int:
+            return int(user32.CallNextHookEx(mouse_hook_handle[0], nCode, wParam, lParam))
+
+        if nCode != HC_ACTION:
+            return next_()
+
+        if wParam == WM_LBUTTONDOWN:
+            key_name = "mouse left"
+        elif wParam == WM_RBUTTONDOWN:
+            key_name = "mouse right"
+        else:
+            return next_()
+
+        if key_name not in deactivate_mouse_names:
+            return next_()
+
+        struct_ptr = ctypes.cast(lParam, ctypes.POINTER(MSLLHOOKSTRUCT))
+        if struct_ptr.contents.flags & LLMHF_INJECTED:
+            return next_()
+
+        is_target, ime_on = decision_callback()
+        if not (is_target and ime_on):
+            return next_()
+
+        try:
+            key_queue.put_nowait((f"__deactivate__:{key_name}", False))
+        except queue.Full:
+            pass
+        return next_()
+
     # CFUNCTYPE: 반환을 c_long으로 받되 콜백 내부에서는 int 반환
     CBFUNC = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
-    hook_cb = CBFUNC(hook_proc)
+    keyboard_hook_cb = CBFUNC(keyboard_hook_proc)
+    mouse_hook_cb = CBFUNC(mouse_hook_proc)
 
     def run_loop() -> None:
-        nonlocal hook_handle
         thread_id.append(threading.get_ident())
         hmod = kernel32.GetModuleHandleW(None)
-        hook_handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, hook_cb, hmod, 0)
-        if not hook_handle:
+        keyboard_hook_handle[0] = user32.SetWindowsHookExW(WH_KEYBOARD_LL, keyboard_hook_cb, hmod, 0)
+        if not keyboard_hook_handle[0]:
+            log("Failed to install WH_KEYBOARD_LL hook")
             return
+        if deactivate_mouse_names:
+            mouse_hook_handle[0] = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_hook_cb, hmod, 0)
+            if not mouse_hook_handle[0]:
+                log("Failed to install WH_MOUSE_LL hook")
+                user32.UnhookWindowsHookEx(keyboard_hook_handle[0])
+                keyboard_hook_handle[0] = None
+                return
         msg = MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0):
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
-        user32.UnhookWindowsHookEx(hook_handle)
-        hook_handle = None
+        if mouse_hook_handle[0]:
+            user32.UnhookWindowsHookEx(mouse_hook_handle[0])
+            mouse_hook_handle[0] = None
+        if keyboard_hook_handle[0]:
+            user32.UnhookWindowsHookEx(keyboard_hook_handle[0])
+            keyboard_hook_handle[0] = None
 
     thread = threading.Thread(target=run_loop, daemon=True)
     thread.start()
