@@ -15,13 +15,13 @@ class Settings:
     intercept_letters: str = "abcdefghijklmnopqrstuvwxyz0123456789"
     intercept_punctuations: str = "!@#$%^&*()_+-=[]{}\\|;:'\",.<>/?`~"
     # 게임 채팅용 지연 추천값.
-    # - 30 FPS: backspace_settle_sec=0.035, write_delay_sec=0.02
-    # - 60 FPS: backspace_settle_sec=0.025, write_delay_sec=0.01
-    # - 100+ FPS: backspace_settle_sec=0.015, write_delay_sec=0.005
+    # - 30 FPS: backspace_settle_sec=0.045, write_delay_sec=0.03
+    # - 60 FPS: backspace_settle_sec=0.03, write_delay_sec=0.015
+    # - 100+ FPS: backspace_settle_sec=0.02, write_delay_sec=0.01
     # 중복 글자(예: 과과, 이이)가 보이면 backspace_settle_sec를 먼저 올리고,
     # 입력이 느리거나 씹히면 write_delay_sec를 조금씩 조정한다.
-    backspace_settle_sec: float = 0.035
-    write_delay_sec: float = 0.02
+    backspace_settle_sec: float = 0.045
+    write_delay_sec: float = 0.03
     paste_chunk_size: int = 8
     target_window_keywords: str = "HELLDIVERS™ 2"
     debug: bool = True
