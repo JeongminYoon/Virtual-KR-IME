@@ -13,6 +13,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $BuildDir = Join-Path $ProjectRoot "build"
 $DistDir = Join-Path $BuildDir "Virtual_KR_IME"
+$AppDir = Join-Path $DistDir "app"
 
 # 버전에서 _pth 파일명 추출 (3.12.3 -> python312._pth)
 $VersionParts = $Version.Split(".")
@@ -25,6 +26,7 @@ $EmbedUrl = "https://www.python.org/ftp/python/$Version/$EmbedZip"
 Write-Host "=== Virtual KR IME Embeddable 빌드 ===" -ForegroundColor Cyan
 Write-Host "Python embed 버전: $Version"
 Write-Host "출력 폴더: $DistDir"
+Write-Host "실행 파일 폴더: $AppDir"
 Write-Host ""
 
 # 1) build 폴더 정리 후 생성
@@ -50,12 +52,13 @@ if (-not (Test-Path $ZipPath)) {
     Write-Host "기존 Embed ZIP 사용: $ZipPath"
 }
 
-# 3) 압축 해제
+# 3) 압축 해제 (app 하위에 구성 파일 모으기)
 Write-Host "압축 해제 중..."
-Expand-Archive -Path $ZipPath -DestinationPath $DistDir -Force
+New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
+Expand-Archive -Path $ZipPath -DestinationPath $AppDir -Force
 
 # 4) _pth 수정: Lib, Lib\site-packages 추가 (site-packages 인식)
-$PthPath = Join-Path $DistDir $PthName
+$PthPath = Join-Path $AppDir $PthName
 if (-not (Test-Path $PthPath)) {
     Write-Host "오류: $PthName 을 찾을 수 없습니다. Embed 버전을 확인하세요." -ForegroundColor Red
     exit 1
@@ -70,7 +73,7 @@ if ($pthContent -notmatch "Lib\\site-packages") {
 }
 
 # 5) Lib\site-packages 생성 후 pip install --target
-$SitePackages = Join-Path $DistDir "Lib\site-packages"
+$SitePackages = Join-Path $AppDir "Lib\site-packages"
 New-Item -ItemType Directory -Path $SitePackages -Force | Out-Null
 
 $Requirements = Join-Path $ProjectRoot "requirements.txt"
@@ -84,14 +87,14 @@ if ($LASTEXITCODE -ne 0) {
 
 # 6) 프로젝트 소스 복사 (src)
 $SrcSrc = Join-Path $ProjectRoot "src"
-$SrcDst = Join-Path $DistDir "src"
+$SrcDst = Join-Path $AppDir "src"
 Copy-Item -Path $SrcSrc -Destination $SrcDst -Recurse -Force
 Write-Host "src 폴더 복사 완료"
 
 # 7) run.bat 생성 (배포 폴더에서 실행용)
 $RunBat = @"
 @echo off
-cd /d "%~dp0"
+cd /d "%~dp0app"
 set PYTHONNOUSERSITE=1
 "python.exe" -m src.main
 pause
@@ -107,7 +110,7 @@ $ReadmeDist = @"
   run.bat 더블클릭
 
 [설정]
-  src\config.py 를 메모장 등으로 열어서 수정할 수 있습니다.
+  app\src\config.py 를 메모장 등으로 열어서 수정할 수 있습니다.
   (대상 게임 창 제목 키워드, IME 켜기/끄기 키 등)
 
 [주의]
@@ -118,6 +121,25 @@ $ReadmePath = Join-Path $DistDir "README.txt"
 # BOM 있음($true): Windows 메모장 등에서 UTF-8로 인식해 한글이 깨지지 않음
 [System.IO.File]::WriteAllText($ReadmePath, $ReadmeDist, [System.Text.UTF8Encoding]::new($true))
 Write-Host "README.txt 생성 완료"
+
+# 9) 라이선스/서드파티 고지 복사
+$ProjectLicenseSrc = Join-Path $ProjectRoot "LICENSE"
+$ProjectLicenseDst = Join-Path $DistDir "LICENSE.txt"
+if (Test-Path $ProjectLicenseSrc) {
+    Copy-Item -Path $ProjectLicenseSrc -Destination $ProjectLicenseDst -Force
+    Write-Host "LICENSE.txt 복사 완료"
+} else {
+    Write-Host "경고: LICENSE 파일을 찾지 못했습니다." -ForegroundColor Yellow
+}
+
+$ThirdPartySrc = Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.txt"
+$ThirdPartyDst = Join-Path $DistDir "THIRD_PARTY_NOTICES.txt"
+if (Test-Path $ThirdPartySrc) {
+    Copy-Item -Path $ThirdPartySrc -Destination $ThirdPartyDst -Force
+    Write-Host "THIRD_PARTY_NOTICES.txt 복사 완료"
+} else {
+    Write-Host "경고: THIRD_PARTY_NOTICES.txt 파일을 찾지 못했습니다." -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "빌드 완료: $DistDir" -ForegroundColor Green

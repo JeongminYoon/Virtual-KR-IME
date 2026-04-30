@@ -150,6 +150,8 @@ COMPOSED_JONGSUNG = {
     ("ㅂ", "ㅅ"): "ㅄ",
 }
 
+VALID_JONGSUNG = set(JONGSUNG_LIST[1:])
+
 # 겹받침 분해 규칙: 겹받침 종성 -> (앞 종성, 뒤 자음)
 DECOMPOSED_JONGSUNG = {
     "ㄳ": ("ㄱ", "ㅅ"),
@@ -202,18 +204,6 @@ class HangulState:
         return not (self.chosung or self.jungsung or self.jongsung)
 
 
-@dataclass(frozen=True)
-class HangulRenderState:
-    """화면 반영용 스냅샷. 확정 글자와 조합 중 글자를 분리해 보관한다."""
-
-    committed_text: str = ""
-    current_text: str = ""
-
-    @property
-    def text(self) -> str:
-        return self.committed_text + self.current_text
-
-
 @dataclass
 class HangulIMECore:
     """간단한 두벌식 한글 IME 핵심 로직.
@@ -231,21 +221,16 @@ class HangulIMECore:
         log("HangulIMECore reset")
 
     @property
-    def text(self) -> str:
-        return self.render_state.text
+    def committed_text(self) -> str:
+        return "".join(self.committed)
 
     @property
-    def render_state(self) -> HangulRenderState:
-        return HangulRenderState(
-            committed_text="".join(self.committed),
-            current_text=self.current.to_char(),
-        )
+    def current_text(self) -> str:
+        return self.current.to_char()
 
-    def feed_text(self, text: str, as_english: bool = False) -> str:
-        """여러 글자를 연속으로 입력했을 때의 결과 문자열을 반환."""
-        for ch in text:
-            self.feed_key(ch, shifted=False, as_english=as_english)
-        return self.text
+    @property
+    def text(self) -> str:
+        return self.committed_text + self.current_text
 
     def feed_key(self, key: str, shifted: bool = False, as_english: bool = False) -> str:
         """알파벳 키 하나를 입력받아 조합 상태를 갱신하고 전체 문자열을 반환."""
@@ -282,12 +267,21 @@ class HangulIMECore:
         # 매우 단순화된 두벌식 로직:
         # - 자음이 먼저 오면 초성, 그다음 모음이 오면 중성, 그 뒤 자음은 종성으로 취급.
         # - 종성이 있는 상태에서 모음이 들어오면, 이전 글자를 커밋하고 새 글자를 시작.
-        if jamo in CHOSUNG_LIST or jamo in ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]:
-            self._handle_consonant(jamo)
-        else:
+        if jamo in JUNGSUNG_LIST:
             self._handle_vowel(jamo)
+        else:
+            self._handle_consonant(jamo)
 
         log("current text:", self.text)
+        return self.text
+
+    def insert_text(self, text: str) -> str:
+        """현재 조합을 확정한 뒤 임의 문자열을 그대로 추가한다."""
+        if not text:
+            return self.text
+        self._commit_current_if_exists()
+        self.committed.extend(text)
+        log("Inserted text:", repr(text), "->", self.text)
         return self.text
 
     def _handle_consonant(self, jamo: str) -> None:
@@ -305,17 +299,13 @@ class HangulIMECore:
 
         if st.chosung and st.jungsung and not st.jongsung:
             # 초성+중성 상태에서 자음이 올 때 처리
-            # 1) 받침용 쌍자음(ㅆ): 그대로 종성으로 사용 (예: 갔)
-            if jamo == "ㅆ":
+            # 1) 종성으로 가능한 자음은 받침으로 붙인다. (예: 갔, 쎆)
+            if jamo in VALID_JONGSUNG:
                 st.jongsung = jamo
                 return
-            # 2) 초성용 쌍자음(ㄲ, ㄸ, ㅃ, ㅉ 등): 이전 음절을 확정하고 새 음절의 초성으로 사용 (예: 쪼까)
-            if jamo in ("ㄲ", "ㄸ", "ㅃ", "ㅉ"):
-                self._commit_current_if_exists()
-                self.current.chosung = jamo
-                return
-            # 3) 그 외 일반 자음은 종성으로 붙인다.
-            st.jongsung = jamo
+            # 2) ㄸ, ㅃ, ㅉ처럼 종성이 될 수 없는 쌍자음은 다음 음절의 초성으로 넘긴다.
+            self._commit_current_if_exists()
+            self.current.chosung = jamo
             return
 
         if st.chosung and st.jungsung and st.jongsung:
@@ -329,13 +319,6 @@ class HangulIMECore:
             self.current.chosung = jamo
             return
 
-        if st.chosung and st.jungsung and st.jongsung:
-            # 이미 종성이 있는 상태에서 또 자음이 오면:
-            # 이전 음절을 확정(커밋)하고, 새 초성으로 시작
-            self._commit_current_if_exists()
-            self.current.chosung = jamo
-            return
-
         # 그 외 예외적인 상황은 현재 글자를 커밋하고 새로 시작
         self._commit_current_if_exists()
         self.current.chosung = jamo
@@ -345,6 +328,15 @@ class HangulIMECore:
         if st.is_empty():
             # 모음만 먼저 온 경우: 중성만 가진 상태로 시작
             st.jungsung = jamo
+            return
+
+        if st.jungsung and not st.chosung and not st.jongsung:
+            # 단독 모음 상태에서도 복모음을 조합한다. (예: ㅗ + ㅏ -> ㅘ)
+            if (st.jungsung, jamo) in COMPOSED_VOWELS:
+                st.jungsung = COMPOSED_VOWELS[(st.jungsung, jamo)]
+                return
+            self._commit_current_if_exists()
+            self.current.jungsung = jamo
             return
 
         if st.chosung and not st.jungsung:

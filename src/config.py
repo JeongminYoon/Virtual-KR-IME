@@ -5,42 +5,26 @@ from dataclasses import dataclass
 class Settings:
     """프로그램 전역 설정 값."""
 
-    # 채팅창 열었을 때 IME 켜기 전용 키 (예: enter)
     ime_activate_key: str = "enter"
-
-    # IME 끄기 전용 키. 쉼표로 여러 개 지정 가능. 눌리면 조합 확정/취소 후 IME OFF.
-    # 키보드는 우리가 다시 게임으로 보내고, mouse left/right는 클릭을 막지 않고 그대로 통과시킨다.
     ime_deactivate_keys: str = "enter, esc, mouse left, mouse right"
-
-    # IME 켜진 상태에서 한글↔영어 서브모드 전환 키 (예: 한/영 키 → right alt)
     language_toggle_key: str = "right alt"
+    # IME가 꺼진 상태에서만, 대상 창 포커스일 때(키워드 비우면 전역) 아래 키를 게임에 넘기지 않음.
+    # ime_activate_key에 쓰인 키는 자동 제외(채팅 열기 등). 쉼표 구분, 이름은 ime_deactivate_keys와 동일 규칙(예: escape→esc).
+    ime_off_block_keys: str = "right alt"
 
-    # IME 끄기 후 다시 켤 때 이전 서브모드(한글/영어)를 기억할지 여부
-    remember_submode: bool = True
-    # IME 켰을 때 시작 서브모드 (remember_submode가 False일 때 사용). "korean" 또는 "english"
-    default_submode: str = "english"
-
-    # 한글 입력 시 가로챌 키 범위 (영문자/숫자 등)
     intercept_letters: str = "abcdefghijklmnopqrstuvwxyz0123456789"
-
-    # 한글 모드에서 함께 관리할 특수문자
     intercept_punctuations: str = "!@#$%^&*()_+-=[]{}\\|;:'\",.<>/?`~"
-
-    # 디버그 모드: 콘솔에 내부 상태를 출력할지 여부
+    # 게임 채팅용 지연 추천값.
+    # - 30 FPS: backspace_settle_sec=0.035, write_delay_sec=0.02
+    # - 60 FPS: backspace_settle_sec=0.025, write_delay_sec=0.01
+    # - 100+ FPS: backspace_settle_sec=0.015, write_delay_sec=0.005
+    # 중복 글자(예: 과과, 이이)가 보이면 backspace_settle_sec를 먼저 올리고,
+    # 입력이 느리거나 씹히면 write_delay_sec를 조금씩 조정한다.
+    backspace_settle_sec: float = 0.035
+    write_delay_sec: float = 0.02
+    paste_chunk_size: int = 8
+    target_window_keywords: str = "HELLDIVERS™ 2"
     debug: bool = True
-
-    # 게임 채팅창 호환 지연(초). 기준: frame_time = 1/FPS
-    #   inject_delay_sec ≈ 1.5×frame_time (글자 간 최소 1~2프레임 간격)
-    #   inject_delay_after_backspaces_sec ≈ 2.5×frame_time (백스페이스 처리 여유)
-    #   composition_update_delay_sec ≈ 1.5×frame_time (조합 갱신 배치 간격)
-    # 추천값: 30 FPS → 0.05, 0.05, 0.05 | 60 FPS → 0.025, 0.04, 0.025 | 100 FPS → 0.015, 0.025, 0.015
-    inject_delay_sec: float = 0.025
-    inject_delay_after_backspaces_sec: float = 0.025
-    composition_update_delay_sec: float = 0.025
-
-    # IME가 동작할 대상 윈도우 제목 키워드(쉼표 구분). 비워두면 전체에서 동작.
-    # 예: "lost ark,lostark,gameclient"
-    target_window_keywords: str = ""
 
 
 settings = Settings()
